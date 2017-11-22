@@ -1,115 +1,102 @@
-import glob, os
 import numpy as np
-import scipy
-import scipy.misc
-from PIL import Image
-import tensorflow as tf
+from scipy import optimize
 
-grados=[45,90,135,180,225,270,315]
-scale=256
+class RedNeuronal(object):
+    def __init__(self):
+        #capa de entrada
+        self.inputLayerSize = 2
+        self.outputLayerSize = 1
+        self.hiddenLayerSize = 3
 
-def tamImagen(imagen):
-    im = Image.open(imagen)
-    pix = im.load()
-    x=0
-    y=0
-    print ("Tamanio:",im.size)
-    #print (pix[x,y])
-    return im.size
+        self.W1 = np.random.randn(self.inputLayerSize, self.hiddenLayerSize)
+        self.W2 = np.random.randn(self.hiddenLayerSize, self.outputLayerSize)
 
-def rotarImagen(imagen,grado):
-    ima = Image.open(imagen)
-    ima = ima.rotate(grado)
-    ima.save(imagen[:-4]+"_"+str(grado)+".jpg")
+    def forward(self, X):
+        # Propogate inputs though network
+        self.z2 = np.dot(X, self.W1)
+        self.a2 = self.sigmoid(self.z2)
+        self.z3 = np.dot(self.a2, self.W2)
+        yHat = self.sigmoid(self.z3)
+        return yHat
 
-def recortarImagen(imagen):
-    size = 20, 20
-    for infile in glob.glob(imagen):
-        file, ext = os.path.splitext(infile)
-        im = Image.open(infile)
-        im.thumbnail(size, Image.ANTIALIAS)
-        im.save(file + "_n.jpg")
+    def sigmoid(self, z):
+        # Apply sigmoid activation function to scalar, vector, or matrix
+        return 1 / (1 + np.exp(-z))
 
-def aumentoData(imagen):
-    for g in grados:
-        rotarImagen(imagen,g)
+    def sigmoidPrime(self, z):
+        # Gradient of sigmoid
+        return np.exp(-z) / ((1 + np.exp(-z)) ** 2)
 
-def normalizacion_contraste_global(imagen):
-    im = Image.open(imagen).convert('L')
-    pix = im.load()
-    w = im.size[0]
-    h = im.size[1]
-    print("Tamanio:", w, h)
-    m = 0
-    for i in range(w):
-        for j in range(h):
-            if (pix[i, j] > 0):
-                m = (m + pix[i, j])
-    m=int(m/(w*h))
-    print('Media: ',m)
+    def costFunction(self, X, y):
+        # Compute cost for given X,y, use weights already stored in class.
+        self.yHat = self.forward(X)
+        J = 0.5 * sum((y - self.yHat) ** 2)
+        return J
 
-    for i in range(w):
-        for j in range(h):
-            pix[i,j]= pix[i, j]-m
+    def costFunctionPrime(self, X, y):
+        # Compute derivative with respect to W and W2 for a given X and y:
+        self.yHat = self.forward(X)
 
-    im.save(imagen[:-4]+"_GCN"+".jpg")
+        delta3 = np.multiply(-(y - self.yHat), self.sigmoidPrime(self.z3))
+        dJdW2 = np.dot(self.a2.T, delta3)
 
-'''
-def global_contrast_normalization(filename):
-    X = np.array(Image.open(filename))
-    r, c, u = X.shape
-    sum_x = 0
+        delta2 = np.dot(delta3, self.W2.T) * self.sigmoidPrime(self.z2)
+        dJdW1 = np.dot(X.T, delta2)
 
-    for i in range(r):
-        for j in range(c):
-            for k in range(u):
-                sum_x = sum_x + X[i][j][k]
-    X_average = float(sum_x) / (r * c * u)
+        return dJdW1, dJdW2
 
-    for i in range(r):
-        for j in range(c):
-            for k in range(u):
-                X[i][j][k] = (X[i][j][k]) - X_average
+        # Helper Functions for interacting with other classes:
 
-    scipy.misc.imsave('DB_breast/result.jpg', X)
+    def getParams(self):
+        # Get W1 and W2 unrolled into vector:
+        params = np.concatenate((self.W1.ravel(), self.W2.ravel()))
+        return params
 
-def gcn(filename, s, lmda, epsilon):
-    X = np.array(Image.open(filename).convert('L'))
+    def setParams(self, params):
+        # Set W1 and W2 using single paramater vector.
+        W1_start = 0
+        W1_end = self.hiddenLayerSize * self.inputLayerSize
+        self.W1 = np.reshape(params[W1_start:W1_end], (self.inputLayerSize, self.hiddenLayerSize))
+        W2_end = W1_end + self.hiddenLayerSize * self.outputLayerSize
+        self.W2 = np.reshape(params[W1_end:W2_end], (self.hiddenLayerSize, self.outputLayerSize))
 
-    X_prime = X.astype(float)
-    r,c,u=X.shape
-    contrast =0
-    su=0
-    sum_x=0
+    def computeGradients(self, X, y):
+        dJdW1, dJdW2 = self.costFunctionPrime(X, y)
+        return np.concatenate((dJdW1.ravel(), dJdW2.ravel()))
 
-    for i in range(r):
-        for j in range(c):
-            for k in range(u):
+def computeNumericalGradient(N, X, y):
+    paramsInitial = N.getParams()
+    numgrad = np.zeros(paramsInitial.shape)
+    perturb = np.zeros(paramsInitial.shape)
+    e = 1e-4
 
-                sum_x=sum_x+X[i][j][k]
-    X_average=float(sum_x)/(r*c*u)
+    for p in range(len(paramsInitial)):
+        # Set perturbation vector
+        perturb[p] = e
+        N.setParams(paramsInitial + perturb)
+        loss2 = N.costFunction(X, y)
 
-    for i in range(r):
-        for j in range(c):
-            for k in range(u):
+        N.setParams(paramsInitial - perturb)
+        loss1 = N.costFunction(X, y)
 
-                su=su+((X[i][j][k])-X_average)**2
-    contrast=np.sqrt(lmda+(float(su)/(r*c*u)))
+        # Compute Numerical Gradient
+        numgrad[p] = (loss2 - loss1) / (2 * e)
 
+        # Return the value we changed to zero:
+        perturb[p] = 0
 
-    for i in range(r):
-        for j in range(c):
-            for k in range(u):
+    # Return Params to original value:
+    N.setParams(paramsInitial)
 
-                X_prime[i][j][k] = s * (X[i][j][k] - X_average) / max(epsilon, contrast)
-    Image.fromarray(X_prime).save("result.jpg")
-'''
+    return numgrad
 
-imagen="DB_breast/p1.jpg"
-#global_contrast_normalization(imagen)
-#gcn(imagen, 1, 10, 0.000000001)
-aumentoData(imagen)
-normalizacion_contraste_global(imagen)
-#recortarImagen(imagen)
-#print(media(imagen))
-#print (media("DB_breast/Patient_1_n.jpg"))
+X=([ 0.04889799, -0.06551702,  0.02013916,  0.04615717, -0.05295928,
+        0.01661075, -0.25285186, -0.13721988, -0.10629924])
+y=([ 0.04889799, -0.06551702,  0.02013916,  0.04615717, -0.05295928,
+        0.01661075, -0.25285186, -0.13721988, -0.10629924])
+NN = RedNeuronal()
+numgrad = computeNumericalGradient(NN, X, y)
+numgrad
+
+grad = NN.computeGradients(X,y)
+grad
